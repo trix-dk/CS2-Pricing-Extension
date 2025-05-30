@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "CS:GO Price Checker (Buff Edition)",
+  "version": "1.6", 
+  "description": "Fetches live CS2 item prices from Buff.163 and supports batch adding. Including live  currency conversion.",
+  "icons": {
+    "16": "buff16.png",
+    "48": "buff48.png",
+    "128": "buff128.png"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "permissions": [
+    "storage",
+    "cookies",
+    "webNavigation"
+  ],
+  "host_permissions": [
+    "https://buff.163.com/*",
+    "https://api.frankfurter.app/*",
+    "https://raw.githubusercontent.com/ModestSerhat/cs2-marketplace-ids/refs/heads/main/cs2_marketplaceids.json" 
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
+}

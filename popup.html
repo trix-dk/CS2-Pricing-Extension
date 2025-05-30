@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CS:GO Price Tracker</title>
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="container">
+    <div id="cookieWarning" style="color: #facc15; background-color: rgba(250, 204, 21, 0.1); margin-bottom: 10px; display: none; border: 1px solid #facc15; padding: 8px; border-radius: 5px; font-size: 0.9em;"></div>
+    <input type="text" id="searchInput" placeholder="Search CS2 skins..." autocomplete="off">
+    <div id="results"></div>
+    <textarea id="batchInput" placeholder="Paste item list here, one per line..."></textarea>
+    <button id="loadList">Load List</button>
+    <div id="listProgress">No items in batch list</div>
+    <div class="saved-section">
+      <div class="saved-header">
+        <h3>Saved Skins</h3>
+        <button id="clearAll">Clear All</button>
+      </div>
+      <div id="savedItems"></div>
+      <div class="total-price">Total: $<span id="total">0.00</span></div>
+      <div class="adjusted-price">
+        <label for="percentageInput">Percentage:</label>
+        <input type="number" id="percentageInput" min="0" max="100" value="100" step="1">%
+        <span>Adjusted Total: $<span id="adjustedTotal">0.00</span></span>
+      </div>
+      <button id="copyCartBtn" style="width: 100%; margin-top: 10px; padding: 10px; background-color: #38bdf8; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 1em;">Copy Price Details</button>
+    </div>
+  </div>
+  <script src="fuse.js"></script> <!-- Make sure fuse.js is in the root directory -->
+  <script src="popup.js"></script> <!-- type="module" is optional here -->
+</body>
+</html>
