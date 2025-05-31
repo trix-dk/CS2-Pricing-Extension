@@ -38,9 +38,9 @@ function showCookieWarning(message) {
       const newRetryButton = retryButton.cloneNode(true); // Clone to remove old listeners
       if (retryButton.parentNode) {
             retryButton.parentNode.replaceChild(newRetryButton, retryButton);
-      } else { // Should not happen if button is found, but defensive
+      } else {
             console.warn("POPUP_DEBUG: retryButton found but parentNode is null.");
-            warningDiv.appendChild(newRetryButton); // Fallback, less clean
+            warningDiv.appendChild(newRetryButton);
       }
       newRetryButton.addEventListener('click', () => {
         warningDiv.innerHTML = "Attempting to get latest cookies from Buff (ensure a Buff tab is open/active)...";
@@ -52,7 +52,6 @@ function showCookieWarning(message) {
             buffSessionCookie = response.buffSessionCookie;
             buffDeviceId = response.buffDeviceId;
             hideCookieWarning();
-            // Attempt to re-fetch prices for items that were loading or had errors
             savedItems.forEach(item => {
               if (item.goods_id && (item.isLoadingPrice || item.priceError)) {
                   const queueKey = `${item.goods_id}_${item.tag_id || 'base'}`;
@@ -65,7 +64,7 @@ function showCookieWarning(message) {
         });
       });
     }
-  }, 0); // setTimeout with 0ms delay
+  }, 0);
 }
 function hideCookieWarning() {
     const warningDiv = document.getElementById('cookieWarning');
@@ -90,9 +89,9 @@ function convertCnyToUsd(cnyAmount) {
 
 async function fetchLiveBuffPrice(item) {
   const itemName = item.originalName; const goods_id = item.goods_id; const tag_id = item.tag_id;
-  const returnError = (errorMessage) => ({ name: itemName, goods_id: goods_id, tag_id: tag_id, error: errorMessage });
+  const returnError = (errorMessage) => ({ name: itemName, goods_id: goods_id, tag_id: tag_id, price: null, error: errorMessage });
 
-  if (!goods_id) return returnError('Missing goods_id for price fetch.');
+  if (!goods_id) return returnError('Missing goods_id.');
   if (!buffSessionCookie) {
     showCookieWarning(`Buff session cookie not found. Please <a href="https://buff.163.com" target="_blank" rel="noopener noreferrer" style="color: #fbbf24;">visit Buff.163.com</a>, log in, then click <button id="retryCookieButton" style="margin-left:5px;padding:2px 5px;background-color:#555;color:white;border:1px solid #777;border-radius:3px;cursor:pointer;">Retry</button> to refresh cookies.`);
     return returnError('Session cookie missing.');
@@ -112,43 +111,70 @@ async function fetchLiveBuffPrice(item) {
   };
 
   try {
-    const responseFromBackground = await new Promise((resolve, reject) => {
+    const responseData = await new Promise((resolve, reject) => {
       chrome.runtime.sendMessage(
         { action: "fetchFromBackground", url: requestUrl, options: { headers: BUFF_HEADERS } },
         (response) => {
           if (chrome.runtime.lastError) return reject(new Error(`Runtime Error: ${chrome.runtime.lastError.message}`));
-          if (response && response.success) resolve(response.data);
-          else {
+          
+          if (response && response.success && response.data) {
+            if (response.data.code && response.data.code !== "OK" && response.data.code !== "SUCCESS") {
+              let apiErrorMsg = `Buff API: ${response.data.error || response.data.code}`;
+              console.warn(`POPUP: Buff API returned error for ${itemName}: Code: ${response.data.code}, Msg: ${response.data.error}`);
+              
+              if (response.data.code === "Invalid Argument" && response.data.error === "Not a valid choice") {
+                 apiErrorMsg = `Buff API: ${response.data.error}`; // More specific for this case
+              } else if (response.data.error && (response.data.error.toLowerCase().includes("login") || response.data.error.toLowerCase().includes("session"))) {
+                showCookieWarning(`Buff API session error: "${response.data.error}". Please <a href="https://buff.163.com" target="_blank" rel="noopener noreferrer" style="color: #fbbf24;">check Buff.163.com</a>, then click <button id="retryCookieButton" style="margin-left:5px;padding:2px 5px;background-color:#555;color:white;border:1px solid #777;border-radius:3px;cursor:pointer;">Retry</button>.`);
+              }
+              return reject(new Error(apiErrorMsg));
+            }
+            resolve(response.data);
+          } else if (response && !response.success) {
             let errMsg = (response && response.error) || "Unknown error from background fetch";
             if (typeof errMsg !== 'string' && errMsg.message) errMsg = errMsg.message;
             else if (typeof errMsg !== 'string') errMsg = JSON.stringify(errMsg);
             const err = new Error(errMsg);
             if(response && response.isNetworkError) err.isNetworkError = true;
             return reject(err);
+          } else {
+            return reject(new Error("Unexpected response from background script."));
           }
         }
       );
     });
 
-    const data = responseFromBackground;
-    const buffSellOrders = data.data?.items;
-    if (buffSellOrders?.length > 0) {
+    const buffSellOrders = responseData.data?.items;
+    
+    if (buffSellOrders && buffSellOrders.length > 0) {
       const sellMinPriceCNY = parseFloat(buffSellOrders[0].price);
-      if (isNaN(sellMinPriceCNY)) return { name: itemName, goods_id: goods_id, tag_id: tag_id, price: 0, error: 'Buff price N/A (NaN from background)' };
+      if (isNaN(sellMinPriceCNY)) return { name: itemName, goods_id: goods_id, tag_id: tag_id, price: null, error: 'Buff price N/A (NaN)' };
       const sellMinPriceUSD = convertCnyToUsd(sellMinPriceCNY);
-      return { name: itemName, goods_id: goods_id, tag_id: tag_id, price: sellMinPriceUSD ?? 0, cnyPrice: sellMinPriceCNY, error: sellMinPriceUSD === null ? 'USD conversion failed' : null };
+      return { name: itemName, goods_id: goods_id, tag_id: tag_id, price: sellMinPriceUSD ?? null, cnyPrice: sellMinPriceCNY, error: sellMinPriceUSD === null ? 'USD conversion failed' : null };
     }
-    return returnError(`No sell orders found on Buff (from background). Results: ${data.data?.total_count || 0}`);
+    
+    let noOrdersMsg = `No sell orders on Buff`;
+    const totalCount = responseData.data?.total_count;
+    if (totalCount !== undefined) noOrdersMsg += ` (Count: ${totalCount})`;
+    if (responseData.code && responseData.code !== "OK" && responseData.code !== "SUCCESS") {
+        // This was handled by the reject(new Error(apiErrorMsg)) above, but as a fallback:
+        noOrdersMsg = `Buff API: ${responseData.error || responseData.code}`;
+    } else if (!responseData.data && !responseData.items && (!responseData.code || (responseData.code === "OK" || responseData.code === "SUCCESS"))) {
+      noOrdersMsg += ` (Empty data structure)`;
+    }
+    
+    return returnError(noOrdersMsg);
+
   } catch (error) {
-    console.error(`POPUP: Error fetching price for ${itemName} via background:`, error.message);
-    if (error.message && (error.message.includes('Login Required') || error.message.includes('Anti-crawler') || error.message.includes('Network response was not ok'))) {
-        showCookieWarning(`Buff API error: ${error.message}. Please <a href="https://buff.163.com" target="_blank" rel="noopener noreferrer" style="color: #fbbf24;">check Buff.163.com</a> (login, CAPTCHA), then click <button id="retryCookieButton" style="margin-left:5px;padding:2px 5px;background-color:#555;color:white;border:1px solid #777;border-radius:3px;cursor:pointer;">Retry</button> to refresh cookies.`);
-        return returnError(error.message);
+    console.error(`POPUP: Error in fetchLiveBuffPrice for ${itemName} (${goods_id || 'N/A'}):`, error.message);
+    
+    if (error.message && (error.message.includes('Login Required') || error.message.includes('Anti-crawler') || error.message.includes('Buff API session error'))) {
+        // Cookie warning likely already shown
+    } else if (error.message && error.message.includes('Network response was not ok')) {
+         showCookieWarning(`Buff API network error: "${error.message}". Please <a href="https://buff.163.com" target="_blank" rel="noopener noreferrer" style="color: #fbbf24;">check Buff.163.com</a>, then click <button id="retryCookieButton" style="margin-left:5px;padding:2px 5px;background-color:#555;color:white;border:1px solid #777;border-radius:3px;cursor:pointer;">Retry</button>.`);
     }
-    if (error.isNetworkError || error.message.toLowerCase().includes("failed to fetch") || error.message.includes("Runtime Error")) {
-        return returnError(`Network/Extension error: ${error.message}`);
-    }
-    return returnError(`General error processing price: ${error.message}`);
+    // For other errors, including "Buff API: Invalid Argument", "Buff API: Not a valid choice"
+    return returnError(error.message);
   }
 }
 
@@ -265,13 +291,13 @@ const initializeSearch = () => {
   const debouncedSearch = debounce((value) => {
     if (!fuseInstance) return;
     displayResults(fuseInstance.search(value).slice(0, 10));
-  }, 50); // Debounce time for search
+  }, 50);
   searchInput.addEventListener('input', (e) => {
     if (e.target.value.length > 1) {
         debouncedSearch(e.target.value);
     } else {
         const resultsDiv = document.getElementById('results');
-        if (resultsDiv) resultsDiv.innerHTML = ''; // Clear results if input is too short
+        if (resultsDiv) resultsDiv.innerHTML = '';
     }
   });
   return fuseInstance;
@@ -279,7 +305,7 @@ const initializeSearch = () => {
 
 const displayResults = (fuseResults) => {
   const container = document.getElementById('results');
-  if (!container) return; // Guard against null container
+  if (!container) return;
   if (!fuseResults || fuseResults.length === 0) {
     container.innerHTML = '<div style="color: #9ca3af; padding: 10px;">No matching skins found.</div>';
     return;
@@ -291,7 +317,7 @@ const displayResults = (fuseResults) => {
 
   document.querySelectorAll('.result-item').forEach(itemElement => {
     itemElement.addEventListener('click', (e) => {
-      const currentItemEl = e.currentTarget; // Use a different variable name to avoid confusion
+      const currentItemEl = e.currentTarget;
       if (!currentItemEl) return;
       const itemDataString = currentItemEl.dataset.item;
       if (!itemDataString) return;
@@ -312,13 +338,13 @@ const displayResults = (fuseResults) => {
           if (currentItemEl) currentItemEl.classList.remove('processing-click');
       };
 
-      if (itemList.length > 0) { // If in batch mode (itemList is populated)
+      if (itemList.length > 0) {
         setTimeout(() => {
           commonTimeoutLogic();
-          nextItem(); // nextItem will handle advancing or finishing the batch
-        }, 50); // Short delay for "Added..." message, then process next batch item
-      } else { // Not in batch mode (single item add)
-        setTimeout(commonTimeoutLogic, 1500); // Longer delay for "Added..." message
+          nextItem();
+        }, 50);
+      } else {
+        setTimeout(commonTimeoutLogic, 1500);
       }
     });
   });
@@ -347,17 +373,17 @@ async function queuePriceFetchForCartItem(cartItem, queueKey) {
   if (itemInCart) {
     if (priceData && !priceData.error && typeof priceData.price === 'number') {
       itemInCart.price = priceData.price;
-      itemInCart.name = priceData.name || cartItem.originalName; // Ensure name is updated if needed
+      itemInCart.name = priceData.name || cartItem.originalName;
       itemInCart.isLoadingPrice = false;
       itemInCart.priceError = null;
     } else {
-      itemInCart.price = 0; // Or keep null, depending on desired display for errors
+      itemInCart.price = null; // Keep null for errors or non-numeric prices
       itemInCart.isLoadingPrice = false;
       itemInCart.priceError = priceData.error || 'Fetch failed';
       console.error(`POPUP: Failed to update price for cart item: ${itemInCart.originalName} (key ${queueKey}) - Error: ${itemInCart.priceError}`);
     }
-    chrome.storage.local.set({ savedItems }); // Save updated price/error state
-    updateSavedList(); // Re-render saved items list
+    chrome.storage.local.set({ savedItems });
+    updateSavedList();
   }
   delete priceFetchQueue[queueKey];
 }
@@ -367,7 +393,7 @@ const updateSavedList = () => {
   const totalEl = document.getElementById('total');
   const adjTotalEl = document.getElementById('adjustedTotal');
   const percIn = document.getElementById('percentageInput');
-  if(!container || !totalEl || !adjTotalEl || !percIn) return; // Guard clause
+  if(!container || !totalEl || !adjTotalEl || !percIn) return;
 
   container.innerHTML = savedItems.map((item, index) => `
     <div class="saved-item" data-goods-id="${item.goods_id}" data-tag-id="${item.tag_id || ''}">
@@ -379,19 +405,19 @@ const updateSavedList = () => {
           <button class="quantity-btn increase" data-index="${index}">+</button>
         </div>
         ${item.isLoadingPrice ? '<span class="loading-price saved-value">Loading...</span>' :
-          item.priceError ? `<span class="saved-value" style="color:#ef4444;" title="${item.priceError}">${item.priceError.substring(0,25)}...</span>` :
-          (item.price === null || (item.price === 0 && !item.priceError && !item.isLoadingPrice)) ? '<span class="loading-price saved-value">N/A</span>' :
+          item.priceError ? `<span class="saved-value" style="color:#ef4444;" title="${item.priceError}">${item.priceError.substring(0,25)}${item.priceError.length > 25 ? '...' : ''}</span>` :
+          (item.price === null) ? '<span class="loading-price saved-value">N/A</span>' : // Explicitly N/A if price is null and no error
           `<span class="saved-value">$${(item.price * (item.quantity||1)).toFixed(2)}</span>`}
       </div>
     </div>`).join('');
 
-  const total = savedItems.reduce((s, i) => (i.price && !i.isLoadingPrice && !i.priceError) ? s + (i.price*(i.quantity||1)) : s, 0);
+  const total = savedItems.reduce((s, i) => (i.price !== null && !i.isLoadingPrice && !i.priceError) ? s + (i.price*(i.quantity||1)) : s, 0);
   totalEl.textContent = total.toFixed(2);
   const perc = parseFloat(percIn.value) || 100;
   adjTotalEl.textContent = ((total * perc) / 100).toFixed(2);
 
   document.querySelectorAll('.quantity-btn').forEach(b => {
-    const newB = b.cloneNode(true); // Clone to safely remove and re-add listeners
+    const newB = b.cloneNode(true);
     if(b.parentNode) b.parentNode.replaceChild(newB, b);
     newB.addEventListener('click', (e) => {
       const idx = parseInt(e.target.dataset.index);
@@ -402,7 +428,7 @@ const updateSavedList = () => {
         if (savedItems[idx].quantity > 1) {
           savedItems[idx].quantity--;
         } else {
-          savedItems.splice(idx, 1); // Remove item if quantity becomes 0
+          savedItems.splice(idx, 1);
         }
       }
       chrome.storage.local.set({savedItems});
@@ -412,7 +438,7 @@ const updateSavedList = () => {
 };
 document.getElementById('clearAll').addEventListener('click', () => {
   savedItems = [];
-  priceFetchQueue = {}; // Clear any pending fetches too
+  priceFetchQueue = {};
   chrome.storage.local.set({savedItems});
   updateSavedList();
 });
@@ -423,10 +449,10 @@ document.getElementById('copyCartBtn').addEventListener('click', () => {
     let currentOverallTotal = 0;
     savedItems.forEach(item => {
         const itemName = item.originalName;
-        const itemIndividualPrice = (item.price && !item.isLoadingPrice && !item.priceError) ? item.price : 0;
+        const itemIndividualPrice = (item.price !== null && !item.isLoadingPrice && !item.priceError) ? item.price : 0;
         const priceString = item.isLoadingPrice ? 'Loading...' : (item.priceError ? `Error (${item.priceError.substring(0,20)}...)` : (item.price !== null ? `$${itemIndividualPrice.toFixed(2)}` : 'N/A'));
         const quantity = item.quantity || 1;
-        for (let i = 0; i < quantity; i++) { // Add one line per quantity
+        for (let i = 0; i < quantity; i++) {
             cartListText += `${itemName} - ${priceString}\n`;
         }
         if (!item.isLoadingPrice && !item.priceError && item.price !== null) {
@@ -442,10 +468,10 @@ document.getElementById('copyCartBtn').addEventListener('click', () => {
         const cb = document.getElementById('copyCartBtn');
         const ot = cb.textContent;
         cb.textContent = 'Copied!';
-        cb.style.backgroundColor = '#10b981'; // Tailwind green-500
+        cb.style.backgroundColor = '#10b981';
         setTimeout(() => {
             cb.textContent = ot;
-            cb.style.backgroundColor = '#38bdf8'; // Tailwind sky-500 (example original)
+            cb.style.backgroundColor = '#38bdf8';
         }, 2000);
     }).catch(err => {
         console.error('POPUP: Failed to copy to clipboard:', err);
@@ -454,15 +480,14 @@ document.getElementById('copyCartBtn').addEventListener('click', () => {
 
 const loadItemList = () => {
   itemList = document.getElementById('batchInput').value.split('\n').map(l => l.trim()).filter(l => l);
-  currentIndex = 0; // Reset index for the new list
-  updateListDisplay(); // Update progress text immediately
+  currentIndex = 0;
+  updateListDisplay();
 
   const searchInputEl = document.getElementById('searchInput');
   const resultsDiv = document.getElementById('results');
 
   if (itemList.length > 0) {
     if (resultsDiv) {
-        // Show loading message for the first item
         resultsDiv.innerHTML = '<div style="color: #9ca3af; padding: 10px;">Loading results for ' + itemList[0].substring(0,30) + '...</div>';
     }
     if (searchInputEl) {
@@ -470,7 +495,6 @@ const loadItemList = () => {
         searchInputEl.dispatchEvent(new Event('input', { bubbles: true }));
     }
   } else {
-    // Clear search input and results if batch list is empty
     if (searchInputEl) searchInputEl.value = '';
     if (resultsDiv) resultsDiv.innerHTML = '';
   }
@@ -478,15 +502,13 @@ const loadItemList = () => {
 
 const nextItem = () => {
   currentIndex++;
-  updateListDisplay(); // Update progress text based on new currentIndex
+  updateListDisplay();
 
   const searchInputEl = document.getElementById('searchInput');
   const resultsDiv = document.getElementById('results');
 
   if (itemList.length > 0 && currentIndex < itemList.length) {
-    // There's a next item in the batch
     if (resultsDiv) {
-      // Clear previous results and show a temporary loading message for the new search
       resultsDiv.innerHTML = '<div style="color: #9ca3af; padding: 10px;">Loading results for ' + itemList[currentIndex].substring(0,30) + '...</div>';
     }
     if (searchInputEl) {
@@ -494,14 +516,9 @@ const nextItem = () => {
       searchInputEl.dispatchEvent(new Event('input', { bubbles: true }));
     }
   } else if (itemList.length > 0 && currentIndex >= itemList.length) {
-    // Batch processing finished (currentIndex is at or beyond the end of itemList)
-    if (searchInputEl) searchInputEl.value = ''; // Clear search input
-    if (resultsDiv) resultsDiv.innerHTML = '';    // Clear results area
-    // The "All items processed!" message is set by updateListDisplay
-    // No need to reset itemList or currentIndex here; loadItemList will do it for a new batch.
+    if (searchInputEl) searchInputEl.value = '';
+    if (resultsDiv) resultsDiv.innerHTML = '';
   }
-  // If itemList is empty, this function might be called if logic elsewhere is flawed,
-  // but the conditions above should prevent action.
 };
 
 const updateListDisplay = () => {
@@ -512,7 +529,7 @@ const updateListDisplay = () => {
   } else if (itemList.length > 0 && currentIndex >= itemList.length) {
     p.textContent = 'All items processed!';
   } else {
-    p.textContent = 'No items in batch list.'; // Default or when itemList is cleared
+    p.textContent = 'No items in batch list.';
   }
 };
 
@@ -537,7 +554,6 @@ async function initializePopup() {
 
   const storage = await chrome.storage.local.get(['savedItems', 'processedMarketItemsCache', 'marketItemsLastFetch']);
   savedItems = storage.savedItems || [];
-  // Queue price fetches for items that were loading or had errors on popup open
   savedItems.forEach(item => {
     if (item.goods_id && (item.isLoadingPrice || item.priceError)) {
         const queueKey = `${item.goods_id}_${item.tag_id||'base'}`;
@@ -559,10 +575,10 @@ async function initializePopup() {
   if (cachedMarketItems.length > 0 && (Math.floor(Date.now()/1000) - lastFetchTimestamp < ONE_DAY_IN_SECONDS)) {
     items = cachedMarketItems;
     fuseInstance = initializeSearch();
-    updateListDisplay(); // Initialize batch display (likely "No items")
-    updateSavedList();   // Initialize saved items display
+    updateListDisplay();
+    updateSavedList();
   } else {
-    fetchItemDataFromNewSource(); // This will also call initializeSearch, updateListDisplay, updateSavedList upon completion/failure
+    fetchItemDataFromNewSource();
   }
 }
 
