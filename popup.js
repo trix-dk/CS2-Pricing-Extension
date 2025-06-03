@@ -8,6 +8,14 @@ const BUFF_GAME = 'csgo';
 const BUFF_PAGE_NUM = 1;
 const BUFF_SELL_ORDER_API_BASE = 'https://buff.163.com/api/market/goods/sell_order';
 
+// NEW: Special Doppler/Gamma Doppler phase names
+const SPECIAL_DOPPLER_PHASES = {
+  "Ruby": true,
+  "Sapphire": true,
+  "Emerald": true,
+  "Black Pearl": true
+};
+
 let items = [];
 let savedItems = [];
 let itemList = []; // Stores items from batch input
@@ -123,7 +131,7 @@ async function fetchLiveBuffPrice(item) {
               console.warn(`POPUP: Buff API returned error for ${itemName}: Code: ${response.data.code}, Msg: ${response.data.error}`);
               
               if (response.data.code === "Invalid Argument" && response.data.error === "Not a valid choice") {
-                 apiErrorMsg = `Buff API: ${response.data.error}`; // More specific for this case
+                 apiErrorMsg = `Buff API: ${response.data.error}`; 
               } else if (response.data.error && (response.data.error.toLowerCase().includes("login") || response.data.error.toLowerCase().includes("session"))) {
                 showCookieWarning(`Buff API session error: "${response.data.error}". Please <a href="https://buff.163.com" target="_blank" rel="noopener noreferrer" style="color: #fbbf24;">check Buff.163.com</a>, then click <button id="retryCookieButton" style="margin-left:5px;padding:2px 5px;background-color:#555;color:white;border:1px solid #777;border-radius:3px;cursor:pointer;">Retry</button>.`);
               }
@@ -157,7 +165,6 @@ async function fetchLiveBuffPrice(item) {
     const totalCount = responseData.data?.total_count;
     if (totalCount !== undefined) noOrdersMsg += ` (Count: ${totalCount})`;
     if (responseData.code && responseData.code !== "OK" && responseData.code !== "SUCCESS") {
-        // This was handled by the reject(new Error(apiErrorMsg)) above, but as a fallback:
         noOrdersMsg = `Buff API: ${responseData.error || responseData.code}`;
     } else if (!responseData.data && !responseData.items && (!responseData.code || (responseData.code === "OK" || responseData.code === "SUCCESS"))) {
       noOrdersMsg += ` (Empty data structure)`;
@@ -173,13 +180,42 @@ async function fetchLiveBuffPrice(item) {
     } else if (error.message && error.message.includes('Network response was not ok')) {
          showCookieWarning(`Buff API network error: "${error.message}". Please <a href="https://buff.163.com" target="_blank" rel="noopener noreferrer" style="color: #fbbf24;">check Buff.163.com</a>, then click <button id="retryCookieButton" style="margin-left:5px;padding:2px 5px;background-color:#555;color:white;border:1px solid #777;border-radius:3px;cursor:pointer;">Retry</button>.`);
     }
-    // For other errors, including "Buff API: Invalid Argument", "Buff API: Not a valid choice"
     return returnError(error.message);
   }
 }
 
 // --- Item Data and Search Initialization ---
 const normalizeName = (name) => name.replace(/★/g, '').replace(/StatTrak™/g, 'ST').replace(/\|/g, '').replace(/\(([^)]+)\)/g, ' $1').replace(/\s+/g, ' ').trim().toLowerCase();
+
+function generateSearchNameVariations(displayName) {
+    const baseNormalizedName = normalizeName(displayName);
+    const searchNames = new Set([baseNormalizedName]); 
+
+    const stPrefix = "st ";
+    const knifeToken = "knife";
+
+    let currentNamesForStRemoval = Array.from(searchNames);
+    for (const name of currentNamesForStRemoval) {
+        if (name.startsWith(stPrefix)) {
+            const withoutSt = name.substring(stPrefix.length).trim();
+            if (withoutSt.length > 0) searchNames.add(withoutSt);
+        }
+    }
+
+    let currentNamesForKnifeRemoval = Array.from(searchNames);
+    for (const name of currentNamesForKnifeRemoval) {
+        if (name.includes(knifeToken)) { 
+            const tokens = name.split(' ');
+            const noKnifeTokens = tokens.filter(t => t !== knifeToken);
+            
+            if (noKnifeTokens.length > 0) {
+                searchNames.add(noKnifeTokens.join(' ').trim());
+            }
+        }
+    }
+    
+    return Array.from(searchNames).filter(s => s.length > 0);
+}
 
 const processMarketplaceIdsJson = (jsonData) => {
     const processedItems = []; const seenCompositeKeys = new Set();
@@ -202,21 +238,47 @@ const processMarketplaceIdsJson = (jsonData) => {
         let variantsProcessedFlag = false;
 
         if (itemData.buff163_phase_ids) {
-            for (const phaseKey in itemData.buff163_phase_ids) {
+            for (const phaseKey in itemData.buff163_phase_ids) { 
                 const phaseTagId = parseInt(itemData.buff163_phase_ids[phaseKey], 10);
                 if (isNaN(phaseTagId) || phaseTagId === null) continue;
-                let phaseDisplayName = nameNoWear;
-                if (nameNoWear.includes("Doppler") && !nameNoWear.includes(phaseKey)) phaseDisplayName = nameNoWear.replace("Doppler", `Doppler (${phaseKey})`);
-                else if (nameNoWear.includes("Gamma Doppler") && !nameNoWear.includes(phaseKey)) phaseDisplayName = nameNoWear.replace("Gamma Doppler", `Gamma Doppler (${phaseKey})`);
-                else if (!nameNoWear.toLowerCase().includes(phaseKey.toLowerCase())) phaseDisplayName = `${nameNoWear} (${phaseKey})`;
-                phaseDisplayName += wearStr;
+                
+                let phaseDisplayName = nameNoWear; 
+
+                if (SPECIAL_DOPPLER_PHASES[phaseKey]) {
+                    if (nameNoWear.includes("Gamma Doppler")) {
+                        phaseDisplayName = nameNoWear.replace("Gamma Doppler", phaseKey);
+                    } else if (nameNoWear.includes("Doppler")) {
+                        phaseDisplayName = nameNoWear.replace("Doppler", phaseKey);
+                    } else {
+                        if (!nameNoWear.toLowerCase().includes(phaseKey.toLowerCase())) {
+                             phaseDisplayName = `${nameNoWear} (${phaseKey})`;
+                        }
+                    }
+                } else {
+                    if (nameNoWear.includes("Doppler") && !nameNoWear.toLowerCase().includes(phaseKey.toLowerCase())) {
+                        phaseDisplayName = nameNoWear.replace("Doppler", `Doppler (${phaseKey})`);
+                    } else if (nameNoWear.includes("Gamma Doppler") && !nameNoWear.toLowerCase().includes(phaseKey.toLowerCase())) {
+                        phaseDisplayName = nameNoWear.replace("Gamma Doppler", `Gamma Doppler (${phaseKey})`);
+                    } else if (!nameNoWear.toLowerCase().includes(phaseKey.toLowerCase())) {
+                        phaseDisplayName = `${nameNoWear} (${phaseKey})`;
+                    }
+                }
+                phaseDisplayName += wearStr; 
+                
                 const compositeKey = `${baseGoodsId}_${phaseTagId}`;
                 if (!seenCompositeKeys.has(compositeKey)) {
-                    processedItems.push({ market_hash_name: phaseDisplayName, goods_id: baseGoodsId, tag_id: phaseTagId, originalName: phaseDisplayName, searchName: normalizeName(phaseDisplayName) });
+                    processedItems.push({ 
+                        market_hash_name: phaseDisplayName, 
+                        goods_id: baseGoodsId, 
+                        tag_id: phaseTagId, 
+                        originalName: phaseDisplayName, 
+                        searchName: generateSearchNameVariations(phaseDisplayName)
+                    });
                     seenCompositeKeys.add(compositeKey);
                 }
             } variantsProcessedFlag = true;
         }
+        
         if (itemData.buff163_paintseed_group_ids && itemData.buff163_paintseed_group_ids["Blue Gem"]) {
             const blueGemTagId = parseInt(itemData.buff163_paintseed_group_ids["Blue Gem"], 10);
             if (!isNaN(blueGemTagId) && blueGemTagId !== null) {
@@ -226,15 +288,28 @@ const processMarketplaceIdsJson = (jsonData) => {
                 blueGemDisplayName += wearStr;
                 const compositeKey = `${baseGoodsId}_${blueGemTagId}`;
                 if (!seenCompositeKeys.has(compositeKey)) {
-                    processedItems.push({ market_hash_name: blueGemDisplayName, goods_id: baseGoodsId, tag_id: blueGemTagId, originalName: blueGemDisplayName, searchName: normalizeName(blueGemDisplayName) });
+                    processedItems.push({ 
+                        market_hash_name: blueGemDisplayName, 
+                        goods_id: baseGoodsId, 
+                        tag_id: blueGemTagId, 
+                        originalName: blueGemDisplayName, 
+                        searchName: generateSearchNameVariations(blueGemDisplayName)
+                    });
                     seenCompositeKeys.add(compositeKey);
                 }
             } variantsProcessedFlag = true;
         }
+
         if (!variantsProcessedFlag) {
             const compositeKey = `${baseGoodsId}_base`;
             if (!seenCompositeKeys.has(compositeKey)) {
-                processedItems.push({ market_hash_name: originalItemNameFromKey, goods_id: baseGoodsId, tag_id: null, originalName: originalItemNameFromKey, searchName: normalizeName(originalItemNameFromKey) });
+                processedItems.push({ 
+                    market_hash_name: originalItemNameFromKey, 
+                    goods_id: baseGoodsId, 
+                    tag_id: null, 
+                    originalName: originalItemNameFromKey, 
+                    searchName: generateSearchNameVariations(originalItemNameFromKey)
+                });
                 seenCompositeKeys.add(compositeKey);
             }
         }
@@ -242,6 +317,7 @@ const processMarketplaceIdsJson = (jsonData) => {
     items = processedItems;
     if (items.length === 0 && Object.keys(itemsToProcess).length > 0) console.error("POPUP_CRITICAL: processMarketplaceIdsJson resulted in zero items, but jsonData.items was not empty.");
 };
+
 
 const fetchItemDataFromNewSource = () => {
   const resultsDiv = document.getElementById('results');
@@ -286,12 +362,23 @@ const fetchItemDataFromNewSource = () => {
 
 const initializeSearch = () => {
   if (!items || items.length === 0) return null;
-  fuseInstance = new Fuse(items, { keys: ['searchName', 'originalName'], threshold: 0.2, distance: 100, includeScore: true, ignoreLocation: true, minMatchCharLength: 2 });
+  fuseInstance = new Fuse(items, { 
+    keys: [
+      { name: 'searchName', weight: 0.7 }, 
+      { name: 'originalName', weight: 0.3 }
+    ], 
+    threshold: 0.2, 
+    distance: 100, 
+    includeScore: true, 
+    ignoreLocation: true, 
+    minMatchCharLength: 2 
+  });
   const searchInput = document.getElementById('searchInput');
   const debouncedSearch = debounce((value) => {
     if (!fuseInstance) return;
-    displayResults(fuseInstance.search(value).slice(0, 10));
-  }, 50);
+    const normalizedQuery = normalizeName(value); 
+    displayResults(fuseInstance.search(normalizedQuery).slice(0, 10));
+  }, 50); 
   searchInput.addEventListener('input', (e) => {
     if (e.target.value.length > 1) {
         debouncedSearch(e.target.value);
@@ -311,7 +398,7 @@ const displayResults = (fuseResults) => {
     return;
   }
   container.innerHTML = fuseResults.map(result => `
-      <div class="result-item" data-item='${JSON.stringify(result.item)}' title="Click to add: ${result.item.originalName}">
+      <div class="result-item" data-item='${JSON.stringify(result.item)}' title="Click to add: ${result.item.originalName} (Score: ${result.score.toFixed(3)})">
         <span class="result-item-name">${result.item.originalName}</span><span class="result-item-status"></span>
       </div>`).join('');
 
@@ -338,13 +425,13 @@ const displayResults = (fuseResults) => {
           if (currentItemEl) currentItemEl.classList.remove('processing-click');
       };
 
-      if (itemList.length > 0) {
+      if (itemList.length > 0 && currentIndex < itemList.length) { 
         setTimeout(() => {
           commonTimeoutLogic();
           nextItem();
-        }, 50);
+        }, 50); 
       } else {
-        setTimeout(commonTimeoutLogic, 1500);
+        setTimeout(commonTimeoutLogic, 1500); 
       }
     });
   });
@@ -355,7 +442,12 @@ const addToSavedItems = (itemToAdd) => {
   if (existingIdx !== -1) {
     savedItems[existingIdx].quantity = (savedItems[existingIdx].quantity || 1) + 1;
   } else {
-    savedItems.push(itemToAdd);
+    const fullItemData = items.find(i => i.goods_id === itemToAdd.goods_id && (i.tag_id || null) === (itemToAdd.tag_id || null));
+    if (fullItemData) {
+        savedItems.push({ ...fullItemData, ...itemToAdd }); 
+    } else {
+        savedItems.push(itemToAdd);
+    }
   }
   const queueKey = `${itemToAdd.goods_id}_${itemToAdd.tag_id || 'base'}`;
   if (itemToAdd.isLoadingPrice && !priceFetchQueue[queueKey]) {
@@ -373,11 +465,11 @@ async function queuePriceFetchForCartItem(cartItem, queueKey) {
   if (itemInCart) {
     if (priceData && !priceData.error && typeof priceData.price === 'number') {
       itemInCart.price = priceData.price;
-      itemInCart.name = priceData.name || cartItem.originalName;
+      itemInCart.name = priceData.name || cartItem.originalName; 
       itemInCart.isLoadingPrice = false;
       itemInCart.priceError = null;
     } else {
-      itemInCart.price = null; // Keep null for errors or non-numeric prices
+      itemInCart.price = null; 
       itemInCart.isLoadingPrice = false;
       itemInCart.priceError = priceData.error || 'Fetch failed';
       console.error(`POPUP: Failed to update price for cart item: ${itemInCart.originalName} (key ${queueKey}) - Error: ${itemInCart.priceError}`);
@@ -406,7 +498,7 @@ const updateSavedList = () => {
         </div>
         ${item.isLoadingPrice ? '<span class="loading-price saved-value">Loading...</span>' :
           item.priceError ? `<span class="saved-value" style="color:#ef4444;" title="${item.priceError}">${item.priceError.substring(0,25)}${item.priceError.length > 25 ? '...' : ''}</span>` :
-          (item.price === null) ? '<span class="loading-price saved-value">N/A</span>' : // Explicitly N/A if price is null and no error
+          (item.price === null) ? '<span class="loading-price saved-value">N/A</span>' : 
           `<span class="saved-value">$${(item.price * (item.quantity||1)).toFixed(2)}</span>`}
       </div>
     </div>`).join('');
@@ -492,7 +584,7 @@ const loadItemList = () => {
     }
     if (searchInputEl) {
         searchInputEl.value = itemList[0];
-        searchInputEl.dispatchEvent(new Event('input', { bubbles: true }));
+        searchInputEl.dispatchEvent(new Event('input', { bubbles: true })); 
     }
   } else {
     if (searchInputEl) searchInputEl.value = '';
@@ -513,7 +605,7 @@ const nextItem = () => {
     }
     if (searchInputEl) {
       searchInputEl.value = itemList[currentIndex];
-      searchInputEl.dispatchEvent(new Event('input', { bubbles: true }));
+      searchInputEl.dispatchEvent(new Event('input', { bubbles: true })); 
     }
   } else if (itemList.length > 0 && currentIndex >= itemList.length) {
     if (searchInputEl) searchInputEl.value = '';
@@ -525,7 +617,7 @@ const updateListDisplay = () => {
   const p = document.getElementById('listProgress');
   if (!p) return;
   if (itemList.length > 0 && currentIndex < itemList.length) {
-    p.textContent = `Item ${currentIndex + 1}/${itemList.length}: ${itemList[currentIndex]}`;
+    p.textContent = `Item ${currentIndex + 1}/${itemList.length}: ${itemList[currentIndex].substring(0, 50)}${itemList[currentIndex].length > 50 ? '...' : ''}`;
   } else if (itemList.length > 0 && currentIndex >= itemList.length) {
     p.textContent = 'All items processed!';
   } else {
@@ -555,6 +647,12 @@ async function initializePopup() {
   const storage = await chrome.storage.local.get(['savedItems', 'processedMarketItemsCache', 'marketItemsLastFetch']);
   savedItems = storage.savedItems || [];
   savedItems.forEach(item => {
+      if (typeof item.quantity !== 'number' || item.quantity < 1) {
+          item.quantity = 1;
+      }
+  });
+
+  savedItems.forEach(item => {
     if (item.goods_id && (item.isLoadingPrice || item.priceError)) {
         const queueKey = `${item.goods_id}_${item.tag_id||'base'}`;
         if (!priceFetchQueue[queueKey]) queuePriceFetchForCartItem(item, queueKey);
@@ -578,7 +676,7 @@ async function initializePopup() {
     updateListDisplay();
     updateSavedList();
   } else {
-    fetchItemDataFromNewSource();
+    fetchItemDataFromNewSource(); 
   }
 }
 
