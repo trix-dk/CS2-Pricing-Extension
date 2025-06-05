@@ -397,18 +397,37 @@ const displayResults = (fuseResults) => {
     container.innerHTML = '<div style="color: #9ca3af; padding: 10px;">No matching skins found.</div>';
     return;
   }
-  container.innerHTML = fuseResults.map(result => `
-      <div class="result-item" data-item='${JSON.stringify(result.item)}' title="Click to add: ${result.item.originalName} (Score: ${result.score.toFixed(3)})">
-        <span class="result-item-name">${result.item.originalName}</span><span class="result-item-status"></span>
-      </div>`).join('');
+  
+  // Clear container first
+  container.innerHTML = '';
+  
+  // Create elements programmatically instead of using innerHTML with JSON
+  fuseResults.forEach(result => {
+    const resultDiv = document.createElement('div');
+    resultDiv.className = 'result-item';
+    resultDiv.title = `Click to add: ${result.item.originalName} (Score: ${result.score.toFixed(3)})`;
+    
+    // Store the item data as a property instead of in HTML attribute
+    resultDiv._itemData = result.item;
+    
+    resultDiv.innerHTML = `
+      <span class="result-item-name">${escapeHtml(result.item.originalName)}</span>
+      <span class="result-item-status"></span>
+    `;
+    
+    container.appendChild(resultDiv);
+  });
 
+  // Add event listeners
   document.querySelectorAll('.result-item').forEach(itemElement => {
     itemElement.addEventListener('click', (e) => {
       const currentItemEl = e.currentTarget;
       if (!currentItemEl) return;
-      const itemDataString = currentItemEl.dataset.item;
-      if (!itemDataString) return;
-      const itemObject = JSON.parse(itemDataString);
+      
+      // Get item data from the stored property instead of parsing JSON
+      const itemObject = currentItemEl._itemData;
+      if (!itemObject) return;
+      
       const statusSpan = currentItemEl.querySelector('.result-item-status');
 
       if (currentItemEl.classList.contains('processing-click')) return;
@@ -436,6 +455,13 @@ const displayResults = (fuseResults) => {
     });
   });
 };
+
+// Helper function to escape HTML characters
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
 
 const addToSavedItems = (itemToAdd) => {
   const existingIdx = savedItems.findIndex(i => i.goods_id === itemToAdd.goods_id && (i.tag_id || null) === (itemToAdd.tag_id || null));
